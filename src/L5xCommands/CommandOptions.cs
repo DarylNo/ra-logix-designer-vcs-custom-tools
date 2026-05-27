@@ -93,7 +93,7 @@ internal static class CommandOptions
     public static Option<L5xSerializationFormat> Format() => new("--format")
     {
         Description = "The serialization format to use.",
-        DefaultValueFactory = _ => L5xSerializationFormat.Xml,
+        DefaultValueFactory = _ => L5xSerializationFormat.Markdown,
     };
 
     /// <summary>
