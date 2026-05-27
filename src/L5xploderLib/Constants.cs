@@ -7,6 +7,7 @@ internal static class Constants
     public const string RootDocumentBaseFileName = "RSLogix5000Content";
     public const string SerializationOptionsFileName = "export-options.yaml";
     public const string XmlFileExtension = ".xml";
+    public const string MdFileExtension = ".md";
     public const string YamlFileExtension = ".yaml";
     public const string JsonFileExtension = ".json";
     public const string StructuredTextFileExtension = ".st";
