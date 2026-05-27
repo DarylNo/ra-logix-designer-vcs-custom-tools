@@ -125,15 +125,55 @@ internal static class XElementMarkdownConverter
             if (IsBinaryDataGroup(items))
                 continue;
 
-            var hashes = new string('#', Math.Clamp(headingLevel, 1, 6));
-            sb.AppendLine();
-            sb.AppendLine($"{hashes} {group.Key}");
-            sb.AppendLine();
+            // Code elements (e.g. <Text> in RLL rungs) render directly as code blocks — no heading, no table
+            if (CodeElements.Contains(group.Key))
+            {
+                foreach (var codeItem in items)
+                {
+                    var code = codeItem.Value.Trim();
+                    if (string.IsNullOrEmpty(code))
+                        continue;
+                    sb.AppendLine();
+                    sb.AppendLine("```iecst");
+                    sb.AppendLine(code);
+                    sb.AppendLine("```");
+                }
+                continue;
+            }
 
             if (CanRenderAsTable(items))
+            {
+                // Table: show group heading for context, then the table
+                var hashes = new string('#', Math.Clamp(headingLevel, 1, 6));
+                sb.AppendLine();
+                sb.AppendLine($"{hashes} {group.Key}");
+                sb.AppendLine();
                 AppendTable(sb, items);
+            }
             else
-                AppendItemsRecursively(sb, items, headingLevel + 1);
+            {
+                // Recursive: if every item has its own label (Name/Number/Id), skip the
+                // redundant group heading and give each item a heading at the current level.
+                // Otherwise emit the group heading and recurse one level deeper.
+                bool allLabeled = items.All(item =>
+                    item.Attribute("Name") != null ||
+                    item.Attribute("Number") != null ||
+                    item.Attribute("Id") != null);
+
+                if (allLabeled)
+                {
+                    sb.AppendLine();
+                    AppendItemsRecursively(sb, items, headingLevel);
+                }
+                else
+                {
+                    var hashes = new string('#', Math.Clamp(headingLevel, 1, 6));
+                    sb.AppendLine();
+                    sb.AppendLine($"{hashes} {group.Key}");
+                    sb.AppendLine();
+                    AppendItemsRecursively(sb, items, headingLevel + 1);
+                }
+            }
         }
     }
 
