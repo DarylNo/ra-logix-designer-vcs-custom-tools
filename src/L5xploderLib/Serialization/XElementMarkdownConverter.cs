@@ -4,18 +4,33 @@ using System.Xml.Linq;
 namespace L5xploderLib.Serialization;
 
 /// <summary>
-/// Converts XElement / XDocument instances to Markdown strings optimized for RAG ingestion.
+/// Converts XElement / XDocument instances to readable Markdown.
+/// Rules:
+///   - Attributes rendered inline as **Key:** Value · **Key:** Value
+///   - Description/Comment/RevisionNote child elements surfaced as blockquotes
+///   - Uniform leaf-element groups rendered as tables (with Description column when present)
+///   - Text elements (ladder logic) rendered as iecst code blocks
+///   - Data elements with Format="L5K" (binary) are silently skipped
+///   - Everything else recursed into as headed sections — no XML fallback
 /// </summary>
 internal static class XElementMarkdownConverter
 {
-    private const int UniformChildTableThreshold = 50;
+    private static readonly HashSet<string> ProseElements =
+        new(StringComparer.OrdinalIgnoreCase) { "Description", "Comment", "RevisionNote" };
+
+    private static readonly HashSet<string> CodeElements =
+        new(StringComparer.OrdinalIgnoreCase) { "Text" };
+
+    private static readonly HashSet<string> BinaryDataFormats =
+        new(StringComparer.OrdinalIgnoreCase) { "L5K" };
 
     public static string ConvertElement(XElement element)
     {
         var sb = new StringBuilder();
-        WriteElementHeading(sb, element, level: 1);
-        WriteAttributes(sb, element, excludeName: true);
-        WriteChildren(sb, element, headingLevel: 2);
+        AppendElementHeading(sb, element, level: 1);
+        AppendProseChildren(sb, element);
+        AppendInlineAttributes(sb, element);
+        AppendChildSections(sb, element, headingLevel: 2);
         return sb.ToString();
     }
 
@@ -26,142 +41,187 @@ internal static class XElementMarkdownConverter
             return string.Empty;
 
         var sb = new StringBuilder();
-        WriteElementHeading(sb, root, level: 1);
-        WriteAttributes(sb, root, excludeName: true);
+        AppendElementHeading(sb, root, level: 1);
+        AppendProseChildren(sb, root);
+        AppendInlineAttributes(sb, root);
 
-        // List top-level child element group names as a section index
-        var topLevelDirs = root.Elements()
+        var sectionNames = root.Elements()
             .Select(e => e.Name.LocalName)
             .Distinct()
             .ToList();
 
-        if (topLevelDirs.Count > 0)
+        if (sectionNames.Count > 0)
         {
             sb.AppendLine();
             sb.AppendLine("## Sections");
             sb.AppendLine();
-            foreach (var dir in topLevelDirs)
-                sb.AppendLine($"- {dir}/");
+            foreach (var name in sectionNames)
+                sb.AppendLine($"- {name}/");
         }
 
         return sb.ToString();
     }
 
     // -------------------------------------------------------------------------
-    // Private helpers
-    // -------------------------------------------------------------------------
 
-    private static void WriteElementHeading(StringBuilder sb, XElement element, int level)
+    private static void AppendElementHeading(StringBuilder sb, XElement element, int level)
     {
-        var hashes = new string('#', level);
+        var hashes = new string('#', Math.Clamp(level, 1, 6));
         var tag = element.Name.LocalName;
-        var name = element.Attribute("Name")?.Value;
+        var label = element.Attribute("Name")?.Value
+                    ?? element.Attribute("Number")?.Value
+                    ?? element.Attribute("Id")?.Value;
 
-        sb.AppendLine(name is not null ? $"{hashes} {tag}: {name}" : $"{hashes} {tag}");
+        sb.AppendLine(label is not null ? $"{hashes} {tag}: {label}" : $"{hashes} {tag}");
     }
 
-    private static void WriteAttributes(StringBuilder sb, XElement element, bool excludeName)
+    private static void AppendProseChildren(StringBuilder sb, XElement element)
     {
+        foreach (var child in element.Elements().Where(e => ProseElements.Contains(e.Name.LocalName)))
+        {
+            var text = child.Value.Trim();
+            if (string.IsNullOrEmpty(text))
+                continue;
+            sb.AppendLine();
+            foreach (var line in text.Split('\n'))
+                sb.AppendLine($"> {line.TrimEnd()}");
+        }
+    }
+
+    private static void AppendInlineAttributes(StringBuilder sb, XElement element)
+    {
+        // Name/Number/Id are consumed into the heading; skip them here
         var attrs = element.Attributes()
-            .Where(a => !excludeName || a.Name.LocalName != "Name")
+            .Where(a =>
+            {
+                var n = a.Name.LocalName;
+                return n != "Name" && n != "Number" && n != "Id";
+            })
             .ToList();
 
         if (attrs.Count == 0)
             return;
 
         sb.AppendLine();
-        foreach (var attr in attrs)
-            sb.AppendLine($"**{attr.Name.LocalName}:** {EscapeMarkdown(attr.Value)}  ");
+        sb.AppendLine(string.Join(" · ", attrs.Select(a => $"**{a.Name.LocalName}:** {EscapeInline(a.Value)}")));
     }
 
-    private static void WriteChildren(StringBuilder sb, XElement element, int headingLevel)
+    private static void AppendChildSections(StringBuilder sb, XElement element, int headingLevel)
     {
-        var children = element.Elements().ToList();
+        var children = element.Elements()
+            .Where(e => !ProseElements.Contains(e.Name.LocalName))
+            .ToList();
+
         if (children.Count == 0)
         {
-            // Leaf text / CDATA content
-            var text = element.Value?.Trim();
-            if (!string.IsNullOrEmpty(text))
-            {
-                sb.AppendLine();
-                sb.AppendLine(text);
-            }
+            AppendLeafContent(sb, element);
             return;
         }
 
-        // Group children by tag name to decide rendering strategy per group
-        var groups = children
-            .GroupBy(c => c.Name.LocalName)
-            .ToList();
-
-        foreach (var group in groups)
+        foreach (var group in children.GroupBy(c => c.Name.LocalName))
         {
             var items = group.ToList();
-            var hashes = new string('#', headingLevel);
 
+            if (IsBinaryDataGroup(items))
+                continue;
+
+            var hashes = new string('#', Math.Clamp(headingLevel, 1, 6));
             sb.AppendLine();
             sb.AppendLine($"{hashes} {group.Key}");
             sb.AppendLine();
 
-            if (ShouldRenderAsTable(items))
-                WriteTable(sb, items);
+            if (CanRenderAsTable(items))
+                AppendTable(sb, items);
             else
-                WriteXmlCodeBlock(sb, items);
+                AppendItemsRecursively(sb, items, headingLevel + 1);
         }
     }
 
-    /// <summary>
-    /// True when all items share the same tag, are ≤ threshold, and have no child elements
-    /// (attributes only), making them suitable for a Markdown table.
-    /// </summary>
-    private static bool ShouldRenderAsTable(List<XElement> items)
+    private static void AppendItemsRecursively(StringBuilder sb, IEnumerable<XElement> items, int headingLevel)
     {
-        if (items.Count > UniformChildTableThreshold)
-            return false;
+        foreach (var item in items)
+        {
+            var label = item.Attribute("Name")?.Value
+                        ?? item.Attribute("Number")?.Value
+                        ?? item.Attribute("Id")?.Value;
 
-        return items.All(item => !item.Elements().Any());
+            if (label is not null && headingLevel <= 6)
+                AppendElementHeading(sb, item, headingLevel);
+
+            AppendProseChildren(sb, item);
+            AppendInlineAttributes(sb, item);
+            AppendChildSections(sb, item, headingLevel + 1);
+        }
     }
 
-    private static void WriteTable(StringBuilder sb, List<XElement> items)
+    private static void AppendLeafContent(StringBuilder sb, XElement element)
     {
-        // Collect the union of all attribute names in order of first appearance
+        var text = element.Value.Trim();
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        sb.AppendLine();
+        if (CodeElements.Contains(element.Name.LocalName))
+        {
+            sb.AppendLine("```iecst");
+            sb.AppendLine(text);
+            sb.AppendLine("```");
+        }
+        else
+        {
+            sb.AppendLine(text);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Table rendering
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Elements can be rendered as a table when every item has no child elements
+    /// other than optional prose (Description / Comment / RevisionNote).
+    /// </summary>
+    private static bool CanRenderAsTable(List<XElement> items)
+        => items.All(item => item.Elements().All(e => ProseElements.Contains(e.Name.LocalName)));
+
+    private static void AppendTable(StringBuilder sb, List<XElement> items)
+    {
+        var hasProse = items.Any(item => item.Elements().Any(e => ProseElements.Contains(e.Name.LocalName)));
+
         var columns = items
             .SelectMany(item => item.Attributes().Select(a => a.Name.LocalName))
             .Distinct()
             .ToList();
 
-        // Header row
+        if (hasProse)
+            columns.Add("Description");
+
         sb.AppendLine("| " + string.Join(" | ", columns) + " |");
         sb.AppendLine("| " + string.Join(" | ", columns.Select(_ => "---")) + " |");
 
-        // Data rows
         foreach (var item in items)
         {
             var cells = columns.Select(col =>
             {
-                var val = item.Attribute(col)?.Value ?? string.Empty;
-                return EscapeTableCell(val);
+                if (col == "Description")
+                {
+                    var prose = item.Elements().FirstOrDefault(e => ProseElements.Contains(e.Name.LocalName));
+                    return EscapeCell(prose?.Value.Trim() ?? string.Empty);
+                }
+                return EscapeCell(item.Attribute(col)?.Value ?? string.Empty);
             });
             sb.AppendLine("| " + string.Join(" | ", cells) + " |");
         }
     }
 
-    private static void WriteXmlCodeBlock(StringBuilder sb, List<XElement> items)
-    {
-        sb.AppendLine("```xml");
-        foreach (var item in items)
-            sb.AppendLine(item.ToString());
-        sb.AppendLine("```");
-    }
+    // -------------------------------------------------------------------------
 
-    private static string EscapeMarkdown(string value)
-    {
-        // Minimal escape: prevent unintended formatting inside attribute values
-        return value.Replace("|", "\\|").Replace("\r\n", " ").Replace("\n", " ");
-    }
+    private static bool IsBinaryDataGroup(List<XElement> items)
+        => items.All(item => BinaryDataFormats.Contains(item.Attribute("Format")?.Value ?? string.Empty));
 
-    private static string EscapeTableCell(string value)
-    {
-        return value.Replace("|", "\\|").Replace("\r\n", " ").Replace("\n", " ");
-    }
+    private static string EscapeInline(string value)
+        => value.Replace("\r\n", " ").Replace("\n", " ");
+
+    private static string EscapeCell(string value)
+        => value.Replace("|", "\\|").Replace("\r\n", " ").Replace("\n", " ");
 }
