@@ -134,7 +134,7 @@ internal static class XElementMarkdownConverter
                     if (string.IsNullOrEmpty(code))
                         continue;
                     sb.AppendLine();
-                    sb.AppendLine("```iecst");
+                    sb.AppendLine("```");
                     sb.AppendLine(code);
                     sb.AppendLine("```");
                 }
