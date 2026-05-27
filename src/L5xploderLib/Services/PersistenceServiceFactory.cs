@@ -15,6 +15,12 @@ public static class PersistenceServiceFactory
                     SerializationOptions = options,
                     ExplodedDir = explodedDir
                 };
+            case L5xSerializationFormat.Markdown:
+                return new MarkdownPersistenceService
+                {
+                    SerializationOptions = options,
+                    ExplodedDir = explodedDir
+                };
             default:
                 throw new NotSupportedException($"Serialization type {options.Format} is not supported.");
         }

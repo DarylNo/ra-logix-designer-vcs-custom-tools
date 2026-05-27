@@ -175,7 +175,7 @@ internal abstract class PersistenceService : IPersistenceService
         SaveElementImpl(elementFile.Element, absoluteFilePath);
     }
 
-    private void SaveCustomElement(CustomElementFile customFile)
+    protected virtual void SaveCustomElement(CustomElementFile customFile)
     {
         var absoluteFilePath = Path.Combine(ExplodedSubDir, customFile.FilePath);
         File.WriteAllText(absoluteFilePath, customFile.Content);

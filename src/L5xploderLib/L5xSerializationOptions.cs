@@ -28,7 +28,7 @@ public sealed class L5xSerializationOptions
     public static L5xSerializationOptions DefaultOptions => new()
     {
         PrettyXmlAttributes = false,
-        Format = L5xSerializationFormat.Xml,
+        Format = L5xSerializationFormat.Markdown,
         OmitExportDate = true,
     };
 
